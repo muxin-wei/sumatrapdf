@@ -125,6 +125,10 @@ static MenuDef menuDefZoomShort[] = {
 //[ ACCESSKEY_GROUP Context Menu (Selection)
 static MenuDef menuDefSelection[] = {
     {
+        TrN("AI Analysis && &Formula (Alt+A)"),
+        CmdAIExplainSelection,
+    },
+    {
         TrN("&Copy To Clipboard"),
         CmdCopySelection,
     },
@@ -177,6 +181,10 @@ static MenuDef menuDefSelection[] = {
 
 //[ ACCESSKEY_GROUP Context Menu (Main)
 static MenuDef menuDefContext[] = {
+    {
+        TrN("AI Analysis && &Formula (Alt+A)"),
+        CmdAIExplainSelection,
+    },
     {
         TrN("S&election"),
         (UINT_PTR)menuDefSelection,
@@ -595,6 +603,7 @@ HMENU BuildMenuFromDef(MenuDef* menuDef, HMENU menu, BuildMenuCtx* ctx) {
             bool isTextSelSubMenu = (subMenuDef == menuDefTranslateWith) || (subMenuDef == menuDefSearchWith);
             removeMenu |= (menuDef == menuDefSelection) && !ctx->hasTextSelection && isTextSelSubMenu;
             bool isRectSel = ctx->hasSelection && !ctx->hasTextSelection;
+            removeMenu |= cmdId == CmdAIExplainSelection && !ctx->hasSelection;
             if (menuDef == menuDefSelection) {
                 removeMenu |= !ctx->hasSelection && cmdId == CmdCopySelection;
                 if (!isRectSel) {

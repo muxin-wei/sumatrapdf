@@ -75,6 +75,36 @@ static bool AIChatGetResource(void* ctx, Str path, WebViewResourceResult* res) {
         res->ownsData = false;
         return true;
     }
+    // Serve KaTeX and other static resources directly from embedded archive
+    Str lookup = path;
+    if (lookup.len > 0 && lookup.s[0] == '/') {
+        lookup = Str(lookup.s + 1, lookup.len - 1);
+    }
+    int assetLen = 0;
+    u8* assetData = GetEmbeddedFileData(lookup, &assetLen);
+    if (!assetData) {
+        TempStr altPath = str::ReplaceTemp(lookup, StrL("/"), StrL("\\"));
+        assetData = GetEmbeddedFileData(altPath, &assetLen);
+    }
+    if (assetData && assetLen > 0) {
+        res->data = assetData;
+        res->dataLen = (size_t)assetLen;
+        res->ownsData = true;
+        if (str::EndsWithI(lookup, StrL(".js"))) {
+            res->contentType = str::Dup(StrL("text/javascript; charset=utf-8"));
+        } else if (str::EndsWithI(lookup, StrL(".css"))) {
+            res->contentType = str::Dup(StrL("text/css; charset=utf-8"));
+        } else if (str::EndsWithI(lookup, StrL(".woff2"))) {
+            res->contentType = str::Dup(StrL("font/woff2"));
+        } else if (str::EndsWithI(lookup, StrL(".woff"))) {
+            res->contentType = str::Dup(StrL("font/woff"));
+        } else if (str::EndsWithI(lookup, StrL(".ttf"))) {
+            res->contentType = str::Dup(StrL("font/ttf"));
+        } else {
+            res->contentType = str::Dup(StrL("application/octet-stream"));
+        }
+        return true;
+    }
     return false;
 }
 
@@ -374,6 +404,9 @@ void OnAIChatFinished(MainWindow* win, AIChatProvider* p, AIChatTabState* st, bo
         SetAIChatWorking(win, false);
         PopulateSessionCombo(win);
     }
+    if (win && win->CurrentTab()) {
+        AIChatSaveTabChatLog(win->CurrentTab(), win->aiChatProvider);
+    }
 }
 
 // the window may be gone by the time an update arrives: look it up again
@@ -569,20 +602,14 @@ bool RunAIChatSync(AIChatBackend backend, Str filePath, Str message, Str& outTex
 
 // --- Sending a message ---
 
-static void SendAIChatMessage(MainWindow* win) {
+void SendAIChatTurn(MainWindow* win, Str prompt, Str imgData, Str cropFilePath) {
     AIChatProvider* p = CurrentProvider(win);
-    if (!p || !win->aiChatInput) {
+    if (!p) {
         return;
     }
     if (!IsAIChatSupportedForTab(win->CurrentTab())) {
         return;
     }
-    HWND hwndInput = win->aiChatInput->hwnd;
-    int inputLen = HwndGetTextLen(hwndInput);
-    if (inputLen == 0) {
-        return;
-    }
-
     WindowTab* tab = win->CurrentTab();
     AIChatTabState* st = GetTabState(tab, win->aiChatProvider);
     if (!tab || len(tab->filePath) == 0 || !st) {
@@ -592,12 +619,48 @@ static void SendAIChatMessage(MainWindow* win) {
         return; // this tab already has a running request
     }
 
-    TempWStr inputW = HwndGetTextWTemp(hwndInput);
-    TempStr input = ToUtf8Temp(inputW);
-    HwndSetText(hwndInput, StrL(""));
-
-    WebViewAddUser(win, input);
+    WebViewAddUser(win, prompt, imgData);
     SetAIChatWorking(win, true);
+
+    // Direct REST API First: check for Gemini, DeepSeek, or OpenAI API keys
+    TempStr geminiKey = GetEnvVariableTemp(StrL("GEMINI_API_KEY"));
+    TempStr openAiKey = GetEnvVariableTemp(StrL("OPENAI_API_KEY"));
+    TempStr deepseekKey = GetEnvVariableTemp(StrL("DEEPSEEK_API_KEY"));
+    TempStr dashscopeKey = GetEnvVariableTemp(StrL("DASHSCOPE_API_KEY"));
+
+    if (len(geminiKey) > 0 || len(openAiKey) > 0 || len(deepseekKey) > 0 || len(dashscopeKey) > 0) {
+        Str provider = StrL("gemini");
+        Str apiKey = geminiKey;
+        Str baseUrl = StrL("https://generativelanguage.googleapis.com");
+        Str model = StrL("gemini-3.8-flash");
+
+        if (len(geminiKey) == 0) {
+            if (len(deepseekKey) > 0) {
+                provider = StrL("openai");
+                apiKey = deepseekKey;
+                baseUrl = StrL("https://api.deepseek.com/v1");
+                model = StrL("deepseek-chat");
+            } else if (len(dashscopeKey) > 0) {
+                provider = StrL("openai");
+                apiKey = dashscopeKey;
+                baseUrl = StrL("https://dashscope.aliyuncs.com/compatible-mode/v1");
+                model = StrL("qwen-plus");
+            } else if (len(openAiKey) > 0) {
+                provider = StrL("openai");
+                apiKey = openAiKey;
+                baseUrl = StrL("https://api.openai.com/v1");
+                model = StrL("gpt-4o");
+            }
+        }
+
+        TempStr js = fmt("streamDirectAPI('%s', '%s', '%s', '%s', 0.2, '', '%s', '%s');",
+                         provider, baseUrl, apiKey, model,
+                         AIChatJsEscapeTemp(prompt),
+                         AIChatJsEscapeTemp(imgData));
+        WebViewEval(win, js, true);
+        SetAIChatWorking(win, false);
+        return;
+    }
 
     bool isNewSession = len(st->sessionId) == 0;
     if (isNewSession && p->generatesSessionId) {
@@ -626,7 +689,7 @@ static void SendAIChatMessage(MainWindow* win) {
         return;
     }
 
-    AIChatLog(p->logger, StrL(">>> user"), input);
+    AIChatLog(p->logger, StrL(">>> user"), prompt);
     AIChatLog(p->logger, StrL(">>> session"),
               fmt("%s (%s)", st->sessionId ? st->sessionId : kAIChatPendingSessionId(),
                   Str(isNewSession ? "new" : "resume")));
@@ -638,9 +701,11 @@ static void SendAIChatMessage(MainWindow* win) {
     args.sessionId = st->sessionId;
     args.filePath = filePath;
     args.dir = dir;
-    // Raw user text; providers quote with QuoteCmdLineArgTemp when building the
-    // CreateProcessW command line (naive " -> \" is not enough on Windows).
-    args.escapedInput = input;
+    if (len(cropFilePath) > 0) {
+        args.escapedInput = fmt("Note: The selected formula/diagram crop image has been saved to: %s\n\n%s", cropFilePath, prompt);
+    } else {
+        args.escapedInput = prompt;
+    }
     args.option = optionIdx;
     args.flag = p->GetFlag();
     args.isNewSession = isNewSession;
@@ -665,6 +730,21 @@ static void SendAIChatMessage(MainWindow* win) {
     ctx->stream.providerId = win->aiChatProvider;
     ctx->stream.sessionId = str::Dup(st->sessionId ? st->sessionId : kAIChatPendingSessionId());
     RunAsync(MkFunc0(StartAIChatReadThread, ctx), StrL("AIChatReadThread"));
+}
+
+static void SendAIChatMessage(MainWindow* win) {
+    if (!win || !win->aiChatInput) {
+        return;
+    }
+    HWND hwndInput = win->aiChatInput->hwnd;
+    int inputLen = HwndGetTextLen(hwndInput);
+    if (inputLen == 0) {
+        return;
+    }
+    TempWStr inputW = HwndGetTextWTemp(hwndInput);
+    TempStr input = ToUtf8Temp(inputW);
+    HwndSetText(hwndInput, StrL(""));
+    SendAIChatTurn(win, input);
 }
 
 // --- WndProcs ---
@@ -797,6 +877,14 @@ static void OnAIChatWebViewNavigated(void* ctx, Str, bool) {
     OnAIChatTabChanged(win);
 }
 
+static bool OnAIChatWebViewNavigationStarting(void* /*ctx*/, Str url, bool /*isNewWindow*/) {
+    if (str::StartsWithI(url, StrL("https://sumatrapdf.")) || str::Eq(url, StrL("about:blank"))) {
+        return true;
+    }
+    SumatraLaunchBrowser(url);
+    return false;
+}
+
 static void EnsureWebViewReady(MainWindow* win) {
     if (win->aiChatWebViewReady) {
         return;
@@ -810,6 +898,7 @@ static void EnsureWebViewReady(MainWindow* win) {
     }
     auto* webView = new WebviewWnd();
     webView->events.ctx = win;
+    webView->events.navigationStarting = OnAIChatWebViewNavigationStarting;
     webView->events.navigationCompleted = OnAIChatWebViewNavigated;
     TempStr localAppData = GetSpecialFolderTemp(CSIDL_LOCAL_APPDATA);
     // use unique data dir per process to avoid locking conflicts
@@ -1177,11 +1266,16 @@ void OnAIChatTabChanged(MainWindow* win) {
     // if tab has in-memory chat log, replay it (fast, includes current session)
     if (len(st->chatLog) > 0) {
         ReplayChatLog(win, st);
-    } else if (tab->filePath && st->sessionId) {
-        // fallback: load from disk
-        AIChatProvider* p = CurrentProvider(win);
-        TempStr dir = path::GetDirTemp(tab->filePath);
-        p->LoadSessionHistory(win, st->sessionId, dir);
+    } else {
+        AIChatLoadTabChatLog(tab, win->aiChatProvider);
+        if (len(st->chatLog) > 0) {
+            ReplayChatLog(win, st);
+        } else if (tab->filePath && st->sessionId) {
+            // fallback: load from disk
+            AIChatProvider* p = CurrentProvider(win);
+            TempStr dir = path::GetDirTemp(tab->filePath);
+            p->LoadSessionHistory(win, st->sessionId, dir);
+        }
     }
 }
 

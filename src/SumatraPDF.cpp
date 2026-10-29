@@ -6753,7 +6753,7 @@ static bool RelayoutFrame(MainWindow* win, bool updateToolbars, int sidebarDx) {
         HwndSetVisible(win->hwndCanvas, !favAsTab);
         if (win->hwndAiChatBox) {
             HwndSetVisible(win->hwndAiChatBox, aiVis);
-            win->aiChatSplitter->SetIsVisible(aiVis);
+            win->aiChatSplitter->SetIsVisible(false);
         }
     }
 
@@ -6813,9 +6813,10 @@ static bool RelayoutFrame(MainWindow* win, bool updateToolbars, int sidebarDx) {
 
     WindowTab* curTab = win->CurrentTab();
     bool favAsTab = curTab && curTab->IsFavoritesTab();
+    bool aiChatVisible = !favAsTab && win->uiState.aiChatVisible && win->hwndAiChatBox;
     bool topVisible = !favAsTab && win->uiState.sidebarTopVisible;
     bool middleVisible = !favAsTab && win->uiState.sidebarMiddleVisible;
-    bool bottomVisible = !favAsTab && win->uiState.sidebarBottomVisible;
+    bool bottomVisible = !favAsTab && (win->uiState.sidebarBottomVisible || aiChatVisible);
     bool sidebarVisible = topVisible || bottomVisible;
     bool sidebarFloats = sidebarVisible && SidebarFloats(win);
     // what takes a column in the layout; a floating sidebar is placed over the canvas
@@ -6823,7 +6824,6 @@ static bool RelayoutFrame(MainWindow* win, bool updateToolbars, int sidebarDx) {
     bool layMiddle = middleVisible && !sidebarFloats;
     bool layBottom = bottomVisible && !sidebarFloats;
     bool laySidebar = sidebarVisible && !sidebarFloats;
-    bool aiChatVisible = !favAsTab && win->uiState.aiChatVisible && win->hwndAiChatBox;
     bool showCaption = !win->presentation && !win->isFullScreen && win->tabsInTitlebar && gSettings->showCaption;
     bool showingMenuBar = IsShowingMenuBarRebar(win);
     bool showTabsBar = !win->presentation && !win->isFullScreen && !win->tabsInTitlebar && win->tabsVisible;
@@ -6870,6 +6870,9 @@ static bool RelayoutFrame(MainWindow* win, bool updateToolbars, int sidebarDx) {
         }
         // never too narrow; max leaves kMinDocCanvasDx for the document
         // (was hard-capped at half the frame, which cut long favorite names)
+        if (aiChatVisible && sidebarDxApplied < 320) {
+            sidebarDxApplied = 340;
+        }
         int maxSidebarDx = std::max(kSidebarMinDx, rc.dx - kMinDocCanvasDx);
         sidebarDxApplied = limitValue(sidebarDxApplied, kSidebarMinDx, maxSidebarDx);
         win->sidebarDx = sidebarDxApplied; // remember what's applied
@@ -6940,15 +6943,15 @@ static bool RelayoutFrame(MainWindow* win, bool updateToolbars, int sidebarDx) {
     SetVis(win->favoritesTabSlot, favAsTab);
     SetVis(win->sidebarPanelsSplitter, layTop && layBottom);
     SetVis(win->sidebarSplitter, laySidebar);
-    SetVis(win->aiChatSplitter, aiChatVisible);
-    SetVis(win->aiChatSlot, aiChatVisible);
+    SetVis(win->aiChatSplitter, false);
+    SetVis(win->aiChatSlot, false);
 
     win->sidebarTopSlot->dx = sidebarDxApplied;
     win->sidebarTopSlot->dy = tocDy;
     win->sidebarMiddleSlot->dx = sidebarDxApplied;
     win->sidebarMiddleSlot->dy = middleDy;
     win->sidebarBottomSlot->dx = sidebarDxApplied;
-    win->aiChatSlot->dx = aiChatDx;
+    win->aiChatSlot->dx = 0;
     if (win->frameLayout) {
         win->frameLayout->rtl = SidebarOnRightLayout();
     }
@@ -6967,13 +6970,16 @@ static bool RelayoutFrame(MainWindow* win, bool updateToolbars, int sidebarDx) {
     BindSlot(win->toolbarBottomSlot, win->hwndToolbar, &dh, updateToolbars && showToolbar && toolbarBottom);
     HWND topHwnd = win->sidebarTop->hwnd;
     HWND middleHwnd = win->sidebarMiddle->hwnd;
-    HWND bottomHwnd = win->sidebarBottom->hwnd;
+    HWND bottomHwnd = aiChatVisible ? win->hwndAiChatBox : win->sidebarBottom->hwnd;
+    if (aiChatVisible && win->sidebarBottom && win->sidebarBottom->hwnd) {
+        HwndSetVisible(win->sidebarBottom->hwnd, false);
+    }
     BindSlot(win->sidebarTopSlot, topHwnd, &dh, layTop && !isFrameResize && !isSplitterDrag);
     BindSlot(win->sidebarMiddleSlot, middleHwnd, &dh, layMiddle && !isFrameResize && !isSplitterDrag);
     BindSlot(win->sidebarBottomSlot, bottomHwnd, &dh, layBottom && !isFrameResize && !isSplitterDrag);
     BindSlot(win->favoritesTabSlot, win->favoritesTabPanel->hwnd, &dh, favAsTab);
     BindSlot(win->canvasSlot, win->hwndCanvas, &dh, !discardCanvasBits);
-    BindSlot(win->aiChatSlot, win->hwndAiChatBox, &dh, aiChatVisible);
+    BindSlot(win->aiChatSlot, nullptr, &dh, false);
 
     win->chromeLayout->Layout(Tight({rc.dx, rc.dy}));
     win->chromeLayout->SetBounds(rc);
@@ -11200,29 +11206,31 @@ static LRESULT FrameOnCommand(MainWindow* win, HWND hwnd, UINT msg, WPARAM wp, L
             ShowSelectionTranslateDialog(tab, TranslateEngine::Default);
             break;
 
-        case CmdTranslateSelectionWithGoogle:
-            ShowSelectionTranslateDialog(tab, TranslateEngine::Google);
+        case CmdAIExplainSelection: {
+            if (!tab || !tab->selectionOnPage || len(*tab->selectionOnPage) == 0) {
+                break;
+            }
+            bool isTextOnly = false;
+            TempStr selText = GetSelectedTextTemp(tab, StrL("\n"), isTextOnly);
+            dm = tab->AsFixed();
+            if (!dm) {
+                break;
+            }
+            TempStr cropFilePath = {};
+            Str dataUrl = RenderSelectionsToDataUrl(dm, *tab->selectionOnPage, &cropFilePath);
+            if (!win->uiState.aiChatVisible) {
+                OnAIChatToggle(win, (int)AIChatBackend::AntiGravity);
+            }
+            TempStr prompt;
+            if (len(selText) > 0) {
+                prompt = fmt("请解析并翻译所选内容与公式（若包含外文请给出精准的学术中文翻译与概念解析；若包含数学公式请给出逐步推导并用标准LaTeX格式 $...$ 和 $$...$$ 排版）：\n\n%s", selText);
+            } else {
+                prompt = str::DupTemp(StrL("请分析所选区域中的数学公式或图表，给出详细的推导过程并用标准LaTeX格式排版。"));
+            }
+            SendAIChatTurn(win, prompt, dataUrl, cropFilePath);
+            str::Free(dataUrl);
             break;
-
-        case CmdTranslateSelectionWithDeepL:
-            ShowSelectionTranslateDialog(tab, TranslateEngine::DeepL);
-            break;
-
-        case CmdTranslateSelectionWithGrokBuild:
-            ShowSelectionTranslateDialog(tab, TranslateEngine::Grok);
-            break;
-
-        case CmdTranslateSelectionWithClaudeCode:
-            ShowSelectionTranslateDialog(tab, TranslateEngine::Claude);
-            break;
-
-        case CmdTranslateSelectionWithOpenAICodex:
-            ShowSelectionTranslateDialog(tab, TranslateEngine::Codex);
-            break;
-
-        case CmdTranslateSelectionWithAntiGravity:
-            ShowSelectionTranslateDialog(tab, TranslateEngine::AntiGravity);
-            break;
+        }
 
         case CmdSearchSelectionWithGoogle:
             LaunchBrowserWithSelection(tab, StrL("https://www.google.com/search?q=${selection}"));

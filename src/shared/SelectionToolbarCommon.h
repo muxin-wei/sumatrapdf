@@ -3,6 +3,8 @@
 
 // --- shared by SelectionToolbarCommon.cpp and each app's SelectionToolbar.cpp ---
 
+struct AppCommandCtx;
+
 struct SelectionToolbarButton {
     int cmdId = 0;
     Str label; // English literal, translated for button text or an icon tooltip

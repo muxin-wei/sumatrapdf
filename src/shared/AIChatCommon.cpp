@@ -45,6 +45,7 @@
 
 #include "EngineAll.h"
 #include "AIChatCommon.h"
+#include "AIChatPanelCommon.h"
 
 #include "SumatraLog.h"
 
@@ -117,37 +118,98 @@ TempStr AIChatJsEscapeTemp(Str s) {
     return ToStrTemp(buf);
 }
 
-TempStr AIChatJsonStrTemp(Str json, Str key) {
-    TempStr pattern = fmt("\"%s\":\"", key);
-    Str rest;
-    if (!str::Cut(json, pattern, nullptr, &rest)) {
-        return {};
+TempStr AIChatJsonEscapeTemp(Str s) {
+    if (len(s) == 0) {
+        return str::DupTemp(StrL(""));
     }
     str::Builder buf;
-    for (int i = 0; i < rest.len; i++) {
-        char c = rest.s[i];
-        if (c == '"') {
-            break;
-        }
-        if (c == '\\' && i + 1 < rest.len) {
-            i++;
-            c = rest.s[i];
-            if (c == 'n') {
-                buf.AppendChar('\n');
-            } else if (c == 't') {
-                buf.AppendChar('\t');
-            } else if (c == '\\') {
-                buf.AppendChar('\\');
-            } else if (c == '"') {
-                buf.AppendChar('"');
-            } else {
-                buf.AppendChar(c);
-            }
-        } else {
-            buf.AppendChar(c);
+    buf.Reserve(s.len + 32);
+    for (int i = 0; i < s.len; i++) {
+        unsigned char c = (unsigned char)s.s[i];
+        switch (c) {
+            case '"':
+                buf.Append(StrL("\\\""));
+                break;
+            case '\\':
+                buf.Append(StrL("\\\\"));
+                break;
+            case '\b':
+                buf.Append(StrL("\\b"));
+                break;
+            case '\f':
+                buf.Append(StrL("\\f"));
+                break;
+            case '\n':
+                buf.Append(StrL("\\n"));
+                break;
+            case '\r':
+                buf.Append(StrL("\\r"));
+                break;
+            case '\t':
+                buf.Append(StrL("\\t"));
+                break;
+            default:
+                if (c < 0x20) {
+                    buf.Append(fmt("\\u%04x", c));
+                } else {
+                    buf.AppendChar((char)c);
+                }
+                break;
         }
     }
     return ToStrTemp(buf);
+}
+
+TempStr AIChatJsonStrTemp(Str json, Str key) {
+    TempStr pattern = fmt("\"%s\"", key);
+    Str rest = json;
+    while (true) {
+        int idx = str::IndexOf(rest, pattern);
+        if (idx < 0) {
+            return {};
+        }
+        const char* p = rest.s + idx + pattern.len;
+        const char* end = json.s + json.len;
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) {
+            p++;
+        }
+        if (p < end && *p == ':') {
+            p++;
+            while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) {
+                p++;
+            }
+            if (p < end && *p == '"') {
+                p++;
+                str::Builder buf;
+                while (p < end) {
+                    char c = *p++;
+                    if (c == '"') {
+                        return ToStrTemp(buf);
+                    }
+                    if (c == '\\' && p < end) {
+                        c = *p++;
+                        if (c == 'n') {
+                            buf.AppendChar('\n');
+                        } else if (c == 't') {
+                            buf.AppendChar('\t');
+                        } else if (c == 'r') {
+                            buf.AppendChar('\r');
+                        } else if (c == '\\') {
+                            buf.AppendChar('\\');
+                        } else if (c == '"') {
+                            buf.AppendChar('"');
+                        } else {
+                            buf.AppendChar(c);
+                        }
+                    } else {
+                        buf.AppendChar(c);
+                    }
+                }
+                return ToStrTemp(buf);
+            }
+        }
+        rest = Str(p, (int)(end - p));
+    }
 }
 
 #if !defined(SUMATRA_NG)
@@ -601,6 +663,9 @@ bool AIChatGetMarkedJsResource(void* ctx, Str path, WebViewResourceResult* res) 
 // marked.min.js host, the :root css variables, the body class
 static const char* kAIChatHtmlFmt = R"(<!DOCTYPE html><html><head><meta charset='utf-8'>
 <script src='%smarked.min.js'></script>
+<link rel='stylesheet' href='%skatex.min.css'>
+<script defer src='%skatex.min.js'></script>
+<script defer src='%sauto-render.min.js'></script>
 <style>
 :root { %s }
 * { box-sizing: border-box; }
@@ -647,11 +712,38 @@ var chatDiv = document.getElementById('chat');
 var plain = document.body.classList.contains('plain');
 var currentBlock = null;
 var currentRaw = '';
-function addUser(text) {
+function renderMath(el) {
+  if (typeof renderMathInElement !== 'undefined') {
+    try {
+      renderMathInElement(el, {
+        delimiters: [
+          {left: '$$', right: '$$', display: true},
+          {left: '$', right: '$', display: false},
+          {left: '\\[', right: '\\]', display: true},
+          {left: '\\(', right: '\\)', display: false}
+        ],
+        throwOnError: false
+      });
+    } catch (_) {}
+  }
+}
+function addUser(text, imgData) {
   flushBlock();
   var d = document.createElement('div');
   d.className = 'user';
-  d.textContent = plain ? 'You: ' + text : text;
+  if (imgData && imgData.length > 0) {
+    var img = document.createElement('img');
+    img.src = imgData;
+    img.style.maxWidth = '100%%';
+    img.style.maxHeight = '220px';
+    img.style.borderRadius = '4px';
+    img.style.marginBottom = '6px';
+    img.style.display = 'block';
+    d.appendChild(img);
+  }
+  var t = document.createElement('div');
+  t.textContent = plain ? 'You: ' + text : text;
+  d.appendChild(t);
   chatDiv.appendChild(d);
   scrollToBottom();
 }
@@ -709,6 +801,7 @@ function appendText(text) {
   currentRaw += text;
   if (typeof marked !== 'undefined') {
     currentBlock.replaceChildren(sanitizedMarkdown(currentRaw));
+    renderMath(currentBlock);
   } else {
     currentBlock.textContent = currentRaw;
   }
@@ -723,6 +816,147 @@ function clearChat() {
 }
 function scrollToBottom() {
   window.scrollTo(0, document.body.scrollHeight);
+}
+var currentAbortController = null;
+function abortDirectAPI() {
+  if (currentAbortController) {
+    try { currentAbortController.abort(); } catch(_) {}
+    currentAbortController = null;
+    addError('Request stopped by user.');
+    flushBlock();
+  }
+}
+async function streamDirectAPI(provider, baseUrl, apiKey, model, temperature, systemPrompt, prompt, imgData) {
+  abortDirectAPI();
+  currentAbortController = new AbortController();
+  var signal = currentAbortController.signal;
+  try {
+    if (!provider || provider.toLowerCase() === 'gemini') {
+      var base = (baseUrl && baseUrl.length > 0) ? baseUrl.replace(/\/+$/, '') : 'https://generativelanguage.googleapis.com';
+      var mod = (model && model.length > 0) ? model : 'gemini-3.8-flash';
+      var url = base + '/v1beta/models/' + encodeURIComponent(mod) + ':streamGenerateContent?alt=sse';
+      if (apiKey && apiKey.length > 0) {
+        url += '&key=' + encodeURIComponent(apiKey);
+      }
+      var parts = [];
+      var fullPrompt = (systemPrompt && systemPrompt.length > 0 ? systemPrompt + '\n\n' : '') + prompt;
+      parts.push({ text: fullPrompt });
+      if (imgData && imgData.length > 0) {
+        var base64Data = imgData.replace(/^data:image\/[a-zA-Z]+;base64,/, '');
+        parts.push({ inline_data: { mime_type: 'image/png', data: base64Data } });
+      }
+      var body = {
+        contents: [{ role: 'user', parts: parts }],
+        generationConfig: { temperature: temperature || 0.2 }
+      };
+      var res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: signal
+      });
+      if (!res.ok) {
+        var errText = await res.text();
+        throw new Error('Gemini API Error (' + res.status + '): ' + errText);
+      }
+      var reader = res.body.getReader();
+      var decoder = new TextDecoder('utf-8');
+      var buffer = '';
+      while (true) {
+        var chunk = await reader.read();
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        var lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (var line of lines) {
+          line = line.trim();
+          if (line.startsWith('data: ')) {
+            var jsonStr = line.substring(6).trim();
+            if (!jsonStr) continue;
+            try {
+              var payload = JSON.parse(jsonStr);
+              var candidate = payload.candidates && payload.candidates[0];
+              if (candidate && candidate.content && candidate.content.parts) {
+                for (var part of candidate.content.parts) {
+                  if (part.text) appendText(part.text);
+                }
+              }
+            } catch (_) {}
+          }
+        }
+      }
+      flushBlock();
+    } else {
+      var base = (baseUrl && baseUrl.length > 0) ? baseUrl.replace(/\/+$/, '') : 'https://api.openai.com/v1';
+      var url = base + '/chat/completions';
+      var mod = (model && model.length > 0) ? model : 'gpt-4o-mini';
+      var messages = [];
+      if (systemPrompt && systemPrompt.length > 0) {
+        messages.push({ role: 'system', content: systemPrompt });
+      }
+      var userContent;
+      if (imgData && imgData.length > 0) {
+        userContent = [
+          { type: 'text', text: prompt },
+          { type: 'image_url', image_url: { url: imgData } }
+        ];
+      } else {
+        userContent = prompt;
+      }
+      messages.push({ role: 'user', content: userContent });
+      var body = {
+        model: mod,
+        stream: true,
+        temperature: temperature || 0.2,
+        messages: messages
+      };
+      var headers = { 'Content-Type': 'application/json' };
+      if (apiKey && apiKey.length > 0) {
+        headers['Authorization'] = 'Bearer ' + apiKey;
+      }
+      var res = await fetch(url, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify(body),
+        signal: signal
+      });
+      if (!res.ok) {
+        var errText = await res.text();
+        throw new Error('API Error (' + res.status + '): ' + errText);
+      }
+      var reader = res.body.getReader();
+      var decoder = new TextDecoder('utf-8');
+      var buffer = '';
+      while (true) {
+        var chunk = await reader.read();
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        var lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (var line of lines) {
+          line = line.trim();
+          if (line.startsWith('data: ')) {
+            var dataPayload = line.substring(6).trim();
+            if (dataPayload === '[DONE]') break;
+            try {
+              var parsed = JSON.parse(dataPayload);
+              var delta = parsed.choices && parsed.choices[0] && parsed.choices[0].delta;
+              if (delta && delta.content) {
+                appendText(delta.content);
+              }
+            } catch (_) {}
+          }
+        }
+      }
+      flushBlock();
+    }
+  } catch (err) {
+    if (err.name !== 'AbortError') {
+      addError(err.message || 'REST API streaming error');
+    }
+  } finally {
+    currentAbortController = null;
+  }
 }
 </script></body></html>)";
 
@@ -784,7 +1018,7 @@ TempStr AIChatFormatChatHtmlTemp(Str virtualHost, Str bgColor) {
             bg, fg, muted, user, userBg, assistantBg, border, codeBg, link, error, errorBg);
     TempStr cssVars = fmt("%s %s", colorVars, AIChatTextCssVarsTemp());
     Str bodyClass = gSettings->aiChat.bubbles ? StrL("bubbles") : StrL("plain");
-    return fmt(kAIChatHtmlFmt, host, cssVars, bodyClass);
+    return fmt(kAIChatHtmlFmt, host, host, host, host, cssVars, bodyClass);
 }
 
 // what a change to the chat's look has to rebuild the page for
@@ -830,8 +1064,11 @@ bool AIChatLaunchProcessWithStdoutPipe(Str cmdLine, Str cwd, AIChatProcessLaunch
     }
     SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
 
+    HANDLE hNullInput = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
+
     STARTUPINFOW si = {};
     si.cb = sizeof(si);
+    si.hStdInput = (hNullInput != INVALID_HANDLE_VALUE) ? hNullInput : nullptr;
     si.hStdOutput = hWritePipe;
     si.hStdError = hWritePipe;
     si.dwFlags = STARTF_USESTDHANDLES;
@@ -843,6 +1080,9 @@ bool AIChatLaunchProcessWithStdoutPipe(Str cmdLine, Str cwd, AIChatProcessLaunch
     BOOL ok = CreateProcessW(nullptr, cmdLineW, nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, cwd ? dirW : nullptr,
                              &si, &pi);
     CloseHandle(hWritePipe);
+    if (hNullInput != INVALID_HANDLE_VALUE && hNullInput != nullptr) {
+        CloseHandle(hNullInput);
+    }
 
     if (!ok) {
         CloseHandle(hReadPipe);
@@ -1034,4 +1274,55 @@ void AIChatWaitForTabProcessesToFinish(MainWindow* win, bool (*tabHasRunningProc
         SleepInMs(10);
     }
     uitask::DrainQueue();
+}
+
+void AIChatSaveTabChatLog(WindowTab* tab, int providerId) {
+    AIChatTabState* st = GetTabState(tab, providerId);
+    if (!tab || len(tab->filePath) == 0 || !st || len(st->chatLog) == 0) {
+        return;
+    }
+    TempStr dir = path::GetDirTemp(tab->filePath);
+    TempStr base = path::GetBaseNameTemp(tab->filePath);
+    TempStr sidecar = path::JoinTemp(dir, fmt("%s.chat.log", base));
+    if (file::WriteFile(sidecar, ToStr(st->chatLog))) {
+        return;
+    }
+    TempStr localApp = GetSpecialFolderTemp(CSIDL_LOCAL_APPDATA);
+    if (len(localApp) == 0) {
+        return;
+    }
+    TempStr chatsDir = path::JoinTemp(localApp, StrL("SumatraPDF\\chats"));
+    dir::CreateAll(chatsDir);
+    TempStr fallback = path::JoinTemp(chatsDir, fmt("%s.chat.log", base));
+    file::WriteFile(fallback, ToStr(st->chatLog));
+}
+
+void AIChatLoadTabChatLog(WindowTab* tab, int providerId) {
+    AIChatTabState* st = GetTabState(tab, providerId);
+    if (!tab || len(tab->filePath) == 0 || !st || len(st->chatLog) > 0) {
+        return;
+    }
+    TempStr dir = path::GetDirTemp(tab->filePath);
+    TempStr base = path::GetBaseNameTemp(tab->filePath);
+    TempStr sidecar = path::JoinTemp(dir, fmt("%s.chat.log", base));
+    if (file::Exists(sidecar)) {
+        Str data = file::ReadFile(sidecar);
+        if (len(data) > 0) {
+            st->chatLog.Append(data);
+        }
+        str::Free(data);
+        return;
+    }
+    TempStr localApp = GetSpecialFolderTemp(CSIDL_LOCAL_APPDATA);
+    if (len(localApp) == 0) {
+        return;
+    }
+    TempStr fallback = path::JoinTemp(localApp, fmt("SumatraPDF\\chats\\%s.chat.log", base));
+    if (file::Exists(fallback)) {
+        Str data = file::ReadFile(fallback);
+        if (len(data) > 0) {
+            st->chatLog.Append(data);
+        }
+        str::Free(data);
+    }
 }

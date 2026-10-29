@@ -33,6 +33,7 @@
 #include "Theme.h"
 #include "SvgIcons.h"
 #include "Toolbar.h"
+#include "shared/SelectionTranslate.h"
 #include "Notifications.h"
 #include "SelectionToolbar.h"
 #include "SelectionToolbarCommon.h"
@@ -656,6 +657,7 @@ void RefreshSelectionToolbarIcons(MainWindow* win) {
 // Hide the toolbar but keep the window around for reuse.
 void HideSelectionToolbar(MainWindow* win) {
     CancelPendingShow(win);
+    CloseSelectionTranslateDialog();
     SelectionToolbar* tb = win ? win->selectionToolbar : nullptr;
     if (!tb || !tb->host) {
         return;
