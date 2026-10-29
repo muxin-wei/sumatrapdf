@@ -77,8 +77,13 @@ void WebViewAppendText(MainWindow* win, Str text) {
     WebViewEval(win, js);
 }
 
-void WebViewAddUser(MainWindow* win, Str text) {
-    TempStr js = fmt("addUser('%s')", AIChatJsEscapeTemp(text));
+void WebViewAddUser(MainWindow* win, Str text, Str imgData) {
+    TempStr js;
+    if (len(imgData) > 0) {
+        js = fmt("addUser('%s', '%s')", AIChatJsEscapeTemp(text), AIChatJsEscapeTemp(imgData));
+    } else {
+        js = fmt("addUser('%s')", AIChatJsEscapeTemp(text));
+    }
     WebViewEval(win, js);
 }
 
@@ -263,6 +268,9 @@ void AutoSelectRecentSession(MainWindow* win) {
 }
 
 void StopAIChat(MainWindow* win) {
+    if (win) {
+        WebViewEval(win, StrL("abortDirectAPI();"), false);
+    }
     AIChatProvider* provider = CurrentProvider(win);
     WindowTab* tab = win->CurrentTab();
     AIChatTabState* st = GetTabState(tab, win->aiChatProvider);

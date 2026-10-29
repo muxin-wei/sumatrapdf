@@ -21,8 +21,8 @@ TempStr FindBackendExecutableTemp(AIChatBackend backend);
 Str BackendDisplayName(AIChatBackend backend);
 // in dropdown order
 static const TranslateEngine gAllEngines[] = {
-    TranslateEngine::Google, TranslateEngine::DeepL, TranslateEngine::Grok,
-    TranslateEngine::Claude, TranslateEngine::Codex, TranslateEngine::AntiGravity,
+    TranslateEngine::AntiGravity, TranslateEngine::Claude, TranslateEngine::Codex,
+    TranslateEngine::Grok,        TranslateEngine::DeepL,  TranslateEngine::Google,
 };
 bool EngineIsAI(TranslateEngine engine);
 AIChatBackend BackendFromEngine(TranslateEngine engine);

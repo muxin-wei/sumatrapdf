@@ -40,6 +40,8 @@ struct SelectionOnPage {
 
 #if !defined(SUMATRA_NG)
 Pixmap* RenderSelectionsAsPixmap(DisplayModel* dm, const Vec<SelectionOnPage>& selections);
+Pixmap* RenderSelectionsWithPaddingAsPixmap(DisplayModel* dm, const Vec<SelectionOnPage>& selections, float padX = 4.0f, float padY = 8.0f);
+Str RenderSelectionsToDataUrl(DisplayModel* dm, const Vec<SelectionOnPage>& selections, TempStr* outCropFilePath = nullptr);
 RenderedBitmap* RenderSelectionsAsRenderedBitmap(DisplayModel* dm, const Vec<SelectionOnPage>& selections);
 #endif
 

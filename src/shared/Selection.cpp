@@ -73,6 +73,9 @@
 #include "Translations.h"
 #include "uia/Provider.h"
 #endif
+#include "base/File.h"
+#include "PngOptimizer.h"
+#include "AppTools.h"
 #include "Selection.h"
 #if defined(SUMATRA_NG)
 
@@ -874,6 +877,130 @@ Pixmap* RenderSelectionsAsPixmap(DisplayModel* dm, const Vec<SelectionOnPage>& s
         FreePixmap(pixmap);
     }
     return combined;
+}
+
+Pixmap* RenderSelectionsWithPaddingAsPixmap(DisplayModel* dm, const Vec<SelectionOnPage>& selections, float padX, float padY) {
+    if (!dm || len(selections) == 0) {
+        return nullptr;
+    }
+
+    constexpr i64 kMaxPixels = 24 * 1000 * 1000;
+    Vec<Pixmap*> pixmaps;
+    i64 totalHeight = 0;
+    int maxWidth = 0;
+    bool tooBig = false;
+
+    for (const SelectionOnPage& selection : selections) {
+        if (!dm->ValidPageNo(selection.pageNo)) {
+            continue;
+        }
+        EngineBase* engine = dm->GetEngine();
+        RectF pageBox = engine->PageMediabox(selection.pageNo);
+        RectF rect = selection.rect;
+
+        // Mathematical padding for mathematical notations, superscripts and subscripts
+        RectF expanded = rect;
+        expanded.x = std::max(pageBox.x, expanded.x - padX);
+        expanded.y = std::max(pageBox.y, expanded.y - padY);
+        float right = std::min(pageBox.x + pageBox.dx, rect.x + rect.dx + padX);
+        float bottom = std::min(pageBox.y + pageBox.dy, rect.y + rect.dy + padY);
+        expanded.dx = std::max(1.0f, right - expanded.x);
+        expanded.dy = std::max(1.0f, bottom - expanded.y);
+
+        float targetZoom = 300.0f / 72.0f;
+        float expWidth = expanded.dx * targetZoom;
+        float expHeight = expanded.dy * targetZoom;
+        if (expWidth > 1024.0f || expHeight > 1024.0f) {
+            float scale = 1024.0f / std::max(expWidth, expHeight);
+            targetZoom *= scale;
+        }
+
+        RenderPageArgs args(selection.pageNo, targetZoom, dm->PageRotation(selection.pageNo), &expanded, RenderTarget::Export);
+        Pixmap* pixmap = PixmapToBgra(engine->RenderPage(args));
+        if (!pixmap) {
+            continue;
+        }
+        i64 pixels = (i64)pixmap->width * pixmap->height;
+        if (pixels <= 0 || pixels > kMaxPixels || totalHeight > kMaxPixels - pixels) {
+            FreePixmap(pixmap);
+            tooBig = true;
+            break;
+        }
+        VecAppend(pixmaps, pixmap);
+        totalHeight += pixmap->height;
+        maxWidth = std::max(maxWidth, pixmap->width);
+    }
+
+    if (tooBig || len(pixmaps) == 0 || totalHeight > INT_MAX) {
+        for (Pixmap* p : pixmaps) {
+            FreePixmap(p);
+        }
+        return nullptr;
+    }
+    if (len(pixmaps) == 1) {
+        return pixmaps[0];
+    }
+
+    Pixmap* combined = AllocPixmapDIB(maxWidth, (int)totalHeight);
+    if (!combined) {
+        for (Pixmap* p : pixmaps) {
+            FreePixmap(p);
+        }
+        return nullptr;
+    }
+    for (int y = 0; y < combined->height; y++) {
+        u8* row = combined->data + ((size_t)y * combined->stride);
+        memset(row, 0xff, (size_t)combined->width * 4);
+    }
+
+    int y = 0;
+    for (Pixmap* pixmap : pixmaps) {
+        for (int row = 0; row < pixmap->height; row++) {
+            memcpy(combined->data + ((size_t)(y + row) * combined->stride),
+                   pixmap->data + ((size_t)row * pixmap->stride), (size_t)pixmap->width * 4);
+        }
+        y += pixmap->height;
+        FreePixmap(pixmap);
+    }
+    return combined;
+}
+
+Str RenderSelectionsToDataUrl(DisplayModel* dm, const Vec<SelectionOnPage>& selections, TempStr* outCropFilePath) {
+    Pixmap* px = RenderSelectionsWithPaddingAsPixmap(dm, selections);
+    if (!px) {
+        return {};
+    }
+    Str png = EncodePngFromPixmap(px);
+    FreePixmap(px);
+    if (len(png) == 0) {
+        return {};
+    }
+    if (outCropFilePath) {
+        TempStr dir = GetTempDirPathTemp();
+        TempStr path = path::JoinTemp(dir, StrL("sumatra_ai_crop.png"));
+        file::WriteFile(path, png);
+        *outCropFilePath = path;
+    }
+    str::Builder b;
+    b.Append(StrL("data:image/png;base64,"));
+    static constexpr char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const u8* data = (const u8*)png.s;
+    size_t size = (size_t)len(png);
+    for (size_t i = 0; i < size; i += 3) {
+        u32 value = (u32)data[i] << 16;
+        if (i + 1 < size) {
+            value |= (u32)data[i + 1] << 8;
+        }
+        if (i + 2 < size) {
+            value |= data[i + 2];
+        }
+        b.AppendChar(table[(value >> 18) & 63]);
+        b.AppendChar(table[(value >> 12) & 63]);
+        b.AppendChar(i + 1 < size ? table[(value >> 6) & 63] : '=');
+        b.AppendChar(i + 2 < size ? table[value & 63] : '=');
+    }
+    str::Free(png);
+    return str::Dup(ToStr(b));
 }
 
 #if defined(SUMATRA_NG)

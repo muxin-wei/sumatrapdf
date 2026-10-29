@@ -102,6 +102,13 @@ goto pack
 if exist "%STAGING%\fonts\" rmdir /s /q "%STAGING%\fonts"
 
 :pack
+if exist "%ROOT%\ext\katex\" (
+  copy /y "%ROOT%\ext\katex\katex.min.js" "%STAGING%\katex.min.js" >nul || exit /b 1
+  copy /y "%ROOT%\ext\katex\auto-render.min.js" "%STAGING%\auto-render.min.js" >nul || exit /b 1
+  copy /y "%ROOT%\ext\katex\katex.min.css" "%STAGING%\katex.min.css" >nul || exit /b 1
+  if not exist "%STAGING%\fonts\" mkdir "%STAGING%\fonts"
+  copy /y "%ROOT%\ext\katex\fonts\*.woff2" "%STAGING%\fonts\" >nul || exit /b 1
+)
 
 "%ROOT%\bin\MakeLZSA.exe" "%ARCHIVE%" "%STAGING%" %EXTRA%
 exit /b %ERRORLEVEL%

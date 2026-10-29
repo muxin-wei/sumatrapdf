@@ -150,6 +150,7 @@ bool IsAIChatSupportedForFile(Str filePath, Kind engineKind = nullptr);
 bool IsAIChatSupportedForTab(WindowTab* tab);
 
 TempStr AIChatJsEscapeTemp(Str s);
+TempStr AIChatJsonEscapeTemp(Str s);
 TempStr AIChatJsonStrTemp(Str json, Str key);
 inline Str AIChatFindHistoryPrompt(Str data, Str sessionId, Str key) {
     Str line;
@@ -241,3 +242,5 @@ void AIChatSyncPanelsToCurrentTab(MainWindow* win);
 void AIChatApplySavedSidebarDx(MainWindow* win);
 void AIChatUpdateSidebarDx(MainWindow* win, int dx, bool persist);
 void AIChatWaitForTabProcessesToFinish(MainWindow* win, bool (*tabHasRunningProcess)(WindowTab*));
+void AIChatSaveTabChatLog(WindowTab* tab, int providerId);
+void AIChatLoadTabChatLog(WindowTab* tab, int providerId);

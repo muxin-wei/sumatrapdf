@@ -24,6 +24,7 @@
 #include "WindowTab.h"
 #include "TextSelection.h"
 #include "Selection.h"
+#include "Commands.h"
 #include "AIChatCommon.h"
 #include "AIChatPanel.h"
 #include "Translations.h"
@@ -33,6 +34,7 @@
 #include "shared/PdfToolsCommon.h"
 #include "SelectionTranslate.h"
 #include "SelectionTranslateCommon.h"
+#include "shared/SelectionToolbarCommon.h"
 
 //   the selected text, editable
 //   ---------------------------------------------- hairline
@@ -47,6 +49,10 @@ struct SelectionTranslateWnd : WindowBase {
     ~SelectionTranslateWnd() override;
 
     HWND hwndOwner = nullptr;
+    MainWindow* win = nullptr;
+    Rect selBounds;
+    void PositionBubble();
+
     // the labels and the buttons are virtual controls; the text fields and the
     // drop-downs are real HWNDs
     VirtText* staticPrompt = nullptr;
@@ -161,12 +167,33 @@ static void LogTranslation(AIChatBackend backend, Str direction, Str text) {
     logf("selection-translate %s %s: %s", BackendLogName(backend), direction, text);
 }
 
-static void ReadPipeToStrBuilder(HANDLE hPipe, str::Builder& out) {
+static bool ReadPipeToStrBuilderWithTimeout(HANDLE hPipe, HANDLE hProcess, DWORD timeoutMs, str::Builder& out) {
+    ULONGLONG deadline = GetTickCount64() + timeoutMs;
     char buf[4096];
-    DWORD bytesRead = 0;
-    while (ReadFile(hPipe, buf, sizeof(buf) - 1, &bytesRead, nullptr) && bytesRead > 0) {
-        out.Append(Str(buf, (int)bytesRead));
+    while (GetTickCount64() < deadline) {
+        DWORD available = 0;
+        if (!PeekNamedPipe(hPipe, nullptr, 0, nullptr, &available, nullptr)) {
+            break;
+        }
+        if (available > 0) {
+            DWORD bytesRead = 0;
+            DWORD toRead = (available < sizeof(buf) - 1) ? available : (DWORD)(sizeof(buf) - 1);
+            if (ReadFile(hPipe, buf, toRead, &bytesRead, nullptr) && bytesRead > 0) {
+                out.Append(Str(buf, (int)bytesRead));
+                continue;
+            }
+            break;
+        }
+        DWORD waitRes = WaitForSingleObject(hProcess, 50);
+        if (waitRes != WAIT_TIMEOUT) {
+            DWORD nRead = 0;
+            while (ReadFile(hPipe, buf, sizeof(buf) - 1, &nRead, nullptr) && nRead > 0) {
+                out.Append(Str(buf, (int)nRead));
+            }
+            return true;
+        }
     }
+    return false;
 }
 
 static void PopulateEngineDropDown(DropDown* dd, TranslateEngine selected) {
@@ -189,6 +216,22 @@ static void PopulateEngineDropDown(DropDown* dd, TranslateEngine selected) {
 }
 
 static bool RunTranslation(AIChatBackend backend, Str srcLang, Str dstLang, Str text, Str& msgOut) {
+    TempStr geminiKey = GetEnvVariableTemp(StrL("GEMINI_API_KEY"));
+    if (len(geminiKey) > 0) {
+        TempStr url = fmt("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=%s", geminiKey);
+        TempStr prompt = BuildTranslationPromptTemp(srcLang, dstLang, text);
+        TempStr body = fmt("{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"%s\"}]}]}", AIChatJsonEscapeTemp(prompt));
+        HttpRsp rsp;
+        if (HttpPostUrl(url, StrL("application/json"), {}, body, &rsp) && IsHttpRspOk(&rsp)) {
+            Str respData = ToStr(rsp.data);
+            TempStr translatedText = AIChatJsonStrTemp(respData, StrL("text"));
+            if (len(translatedText) > 0) {
+                msgOut = str::Dup(translatedText);
+                return true;
+            }
+        }
+    }
+
     TempStr exePath = FindBackendExecutableTemp(backend);
     if (len(exePath) == 0) {
         msgOut = str::Dup(Tr("The selected AI CLI is not installed."));
@@ -223,12 +266,11 @@ static bool RunTranslation(AIChatBackend backend, Str srcLang, Str dstLang, Str 
 
     str::Builder output;
     output.Reserve(4096);
-    ReadPipeToStrBuilder(launch.hReadPipe, output);
+    bool readOk = ReadPipeToStrBuilderWithTimeout(launch.hReadPipe, launch.hProcess, 3 * 60 * 1000, output);
     CloseHandle(launch.hReadPipe);
     launch.hReadPipe = nullptr;
 
-    DWORD waitRes = WaitForSingleObject(launch.hProcess, 5 * 60 * 1000);
-    if (waitRes == WAIT_TIMEOUT) {
+    if (!readOk) {
         TerminateProcess(launch.hProcess, 1);
         AIChatCloseProcess(&launch.hProcess, false);
         msgOut = str::Dup(Tr("Translation timed out."));
@@ -320,6 +362,41 @@ void SelectionTranslateWnd::OnDpiChanged(WindowBase::DpiChangedEvent* ev) {
     ev->didHandle = true;
 }
 
+void SelectionTranslateWnd::PositionBubble() {
+    MainWindow* w = this->win;
+    if (w && w->hwndCanvas && !selBounds.IsEmpty()) {
+        Rect canvas = w->canvasRc;
+        int gap = DpiScale(6);
+        RECT r;
+        GetWindowRect(hwnd, &r);
+        int bubbleW = r.right - r.left;
+        int bubbleH = r.bottom - r.top;
+        if (bubbleW <= 0) {
+            bubbleW = DpiScale(380);
+        }
+        if (bubbleH <= 0) {
+            bubbleH = DpiScale(220);
+        }
+
+        int x = selBounds.x + (selBounds.dx / 2) - (bubbleW / 2);
+        int y = selBounds.y + selBounds.dy + gap;
+        if (y + bubbleH > canvas.y + canvas.dy) {
+            y = selBounds.y - gap - bubbleH;
+        }
+        int maxX = canvas.x + canvas.dx - bubbleW;
+        x = std::min(x, maxX);
+        x = std::max(x, canvas.x);
+        int maxY = canvas.y + canvas.dy - bubbleH;
+        y = std::min(y, maxY);
+        y = std::max(y, canvas.y);
+
+        Point p = HwndClientToScreen(w->hwndCanvas, Point(x, y));
+        SetWindowPos(hwnd, HWND_TOP, p.x, p.y, bubbleW, bubbleH, SWP_SHOWWINDOW | SWP_NOACTIVATE);
+    } else {
+        HwndCenterDialog(hwnd, hwndOwner);
+    }
+}
+
 void SelectionTranslateWnd::Relayout(bool initial) {
     if (!layout) {
         return;
@@ -328,7 +405,7 @@ void SelectionTranslateWnd::Relayout(bool initial) {
         LayoutAndSizeToContent(layout, 0, 0, hwnd);
         // pick up the virtual controls so we paint them and they get their input
         DoLayout(HwndClientRect(hwnd).Size());
-        HwndCenterDialog(hwnd, hwndOwner);
+        PositionBubble();
         sizeInitialized = true;
         return;
     }
@@ -406,13 +483,15 @@ void SelectionTranslateWnd::StartTranslation(VirtMouseEvent*) {
     MaybeSaveTranslatePrefs(curEngine, srcLang, dstLang);
 
     if (!EngineIsAI(curEngine)) {
-        // Google / DeepL translate in the browser; keep the dialog open so the
-        // user can tweak languages or pick a different engine
-        TempStr url = BuildTranslateUrlTemp(curEngine, srcLang, dstLang, text);
-        if (url) {
-            SumatraLaunchBrowser(url);
+        if (IsEngineAvailable(TranslateEngine::AntiGravity)) {
+            curEngine = TranslateEngine::AntiGravity;
+        } else {
+            TempStr url = BuildTranslateUrlTemp(curEngine, srcLang, dstLang, text);
+            if (url) {
+                SumatraLaunchBrowser(url);
+            }
+            return;
         }
-        return;
     }
 
     backend = BackendFromEngine(curEngine);
@@ -504,12 +583,11 @@ static void TeardownSelectionTranslateWnd() {
     }
     SelectionTranslateWnd* w = gSelectionTranslateWnd;
     gSelectionTranslateWnd = nullptr;
-    HWND hwndOwner = w->hwndOwner;
-    if (hwndOwner) {
-        EnableWindow(hwndOwner, TRUE);
-        HwndToForeground(hwndOwner);
-    }
     w->ScheduleDelete();
+}
+
+void CloseSelectionTranslateDialog() {
+    TeardownSelectionTranslateWnd();
 }
 
 static void OnSelectionTranslateClose(WindowBase::CloseEvent* ev) {
@@ -535,10 +613,12 @@ bool SelectionTranslateWnd::Create(HWND owner, Str selText, Str title) {
     SetFont(fontText);
     {
         CreateCustomArgs args;
+        args.owner = owner;
         args.title = title;
         args.visible = false;
-        // resizable: thick frame; CLIPCHILDREN avoids flicker while resizing
-        args.style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_CLIPCHILDREN;
+        // Modeless popup card without thick titlebar or caption
+        args.style = WS_POPUP | WS_BORDER | WS_CLIPCHILDREN;
+        args.exStyle = WS_EX_TOOLWINDOW;
         args.font = fontText;
         args.isRtl = isRtl;
         args.bgColor = colBg;
@@ -674,6 +754,9 @@ bool SelectionTranslateWnd::Create(HWND owner, Str selText, Str title) {
     UpdateTranslateButtonState();
     SetIsVisible(true);
     EditSetFocus(editSrcText);
+    if (!str::IsEmptyOrWhiteSpace(selText)) {
+        StartTranslation(nullptr);
+    }
     return true;
 }
 
@@ -700,10 +783,11 @@ void ShowSelectionTranslateDialog(WindowTab* tab, TranslateEngine engineIn) {
     }
 
     HWND hwndOwner = tab->win->hwndFrame;
-    EnableWindow(hwndOwner, FALSE);
 
     auto* wnd = new SelectionTranslateWnd();
     wnd->hwndOwner = hwndOwner;
+    wnd->win = tab->win;
+    GetSelectionBounds(tab->win, wnd->selBounds);
     wnd->engine = engine;
     wnd->SetFont(GetAppFont());
     wnd->closeOnEsc = true;
@@ -716,7 +800,6 @@ void ShowSelectionTranslateDialog(WindowTab* tab, TranslateEngine engineIn) {
         MkMethod1<SelectionTranslateWnd, WindowBase::DpiChangedEvent*, &SelectionTranslateWnd::OnDpiChanged>(wnd);
     Str title = Tr("Translate");
     if (!wnd->Create(hwndOwner, selText, title)) {
-        EnableWindow(hwndOwner, TRUE);
         delete wnd;
         return;
     }

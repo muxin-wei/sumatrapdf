@@ -79,6 +79,7 @@ static Accel gBuiltInAccelerators[] = {
     //{{kShift | kCtrl | kVirt, 'S'}, CmdCreateShortcutToFile},
 
     {{kCtrl | kVirt, 'A'}, CmdSelectAll},
+    {{kAlt | kVirt, 'A'}, CmdAIExplainSelection},
     {{kCtrl | kVirt, 'B'}, CmdFavoriteAdd},
     {{kCtrl | kVirt, 'C'}, CmdCopySelection},
     {{kCtrl | kVirt, VK_INSERT}, CmdCopySelection},

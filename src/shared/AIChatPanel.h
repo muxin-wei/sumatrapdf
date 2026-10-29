@@ -15,7 +15,7 @@ AIChatProvider* GetGrokBuildProvider();
 
 AIChatProvider* GetCodexBuildProvider();
 
-constexpr char kAntiGravityDefaultModel[] = "gemini-3.8-flash-medium";
+constexpr char kAntiGravityDefaultModel[] = "gemini-3.8-flash";
 AIChatProvider* GetAntiGravityProvider();
 
 AIChatProvider* GetAIChatProvider(int providerId);
@@ -26,6 +26,7 @@ void ShutdownAIChatForMainWindow(MainWindow* win);
 
 void OnAIChatToggle(MainWindow* win, int providerId);
 void OnAIChatTabChanged(MainWindow* win);
+void SendAIChatTurn(MainWindow* win, Str prompt, Str imgData = {}, Str cropFilePath = {});
 void UpdateAIChatTheme(MainWindow* win);
 void UpdateAIChatDpi(MainWindow* win, int dpi);
 void RelayoutAIChatPanel(MainWindow* win);

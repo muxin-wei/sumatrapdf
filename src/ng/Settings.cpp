@@ -329,7 +329,7 @@ static const StructInfo gCodexBuildInfo = {
     false};
 
 static const FieldInfo gAntiGravityFields[] = {
-    {offsetof(AntiGravity, model), SettingType::String, (intptr_t)"gemini-3.8-flash-medium"},
+    {offsetof(AntiGravity, model), SettingType::String, (intptr_t)"gemini-3.8-flash"},
     {offsetof(AntiGravity, models), SettingType::String, (intptr_t)""},
     {offsetof(AntiGravity, effort), SettingType::Int, 1},
     {offsetof(AntiGravity, autoApprove), SettingType::Bool, true},

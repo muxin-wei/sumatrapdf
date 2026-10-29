@@ -9,7 +9,7 @@ AIChatTabState* GetTabState(WindowTab* tab, int providerId);
 Str kAIChatPendingSessionId();
 Str BgColorForProvider(AIChatProvider* p);
 void WebViewAppendText(MainWindow* win, Str text);
-void WebViewAddUser(MainWindow* win, Str text);
+void WebViewAddUser(MainWindow* win, Str text, Str imgData = {});
 void WebViewAddTool(MainWindow* win, Str text);
 void WebViewAddError(MainWindow* win, Str text);
 void WebViewFlushBlock(MainWindow* win);
